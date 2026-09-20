@@ -13,4 +13,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ansible/ansible-lint-action@v6.22.2
+      - uses: ansible/ansible-lint@v26.8.0
