@@ -101,6 +101,7 @@
   # value changed, so there's no cheap way to report an accurate "changed"
   # here without diffing main.cf ourselves - left honest as always-changed
   # rather than a `changed_when: false` that would hide real edits.
+  changed_when: true
   notify: Restart postfix
 
 - name: Send a test message

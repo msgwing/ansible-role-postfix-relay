@@ -1,10 +1,15 @@
 ---
 - name: Postmap sasl_passwd
   ansible.builtin.command: postmap /etc/postfix/sasl_passwd
+  # Always rebuilds the .db from the plain-text file - there's no cheap way
+  # to tell ansible-lint's no-changed-when rule "this always changes
+  # something" other than saying so explicitly.
+  changed_when: true
   notify: Restart postfix
 
 - name: Postmap sender_canonical
   ansible.builtin.command: postmap /etc/postfix/sender_canonical
+  changed_when: true
   notify: Restart postfix
 
 - name: Restart postfix
