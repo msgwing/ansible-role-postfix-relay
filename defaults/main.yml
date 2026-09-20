@@ -1,0 +1,12 @@
+---
+# ZeroSMTP account - required, no default. Register free at https://msgwing.com
+zerosmtp_username: ""
+zerosmtp_password: ""
+
+# 587 (STARTTLS) or 465 (implicit TLS). 587 is the documented default.
+zerosmtp_port: 587
+
+zerosmtp_relay_host: "mx.msgwing.com"
+
+# Send a test message after configuring, to this address. Leave empty to skip.
+zerosmtp_test_recipient: ""

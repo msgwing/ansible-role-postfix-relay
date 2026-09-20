@@ -1,0 +1,33 @@
+galaxy_info:
+  role_name: postfix_relay
+  namespace: msgwing
+  author: msgwing
+  description: >
+    Configure Postfix as a satellite/smarthost relay through ZeroSMTP
+    (mx.msgwing.com) - a free SMTP relay for devices and legacy apps that
+    can't do OAuth2. Only a ZeroSMTP username and password are required;
+    the role installs Postfix, sets satellite mode, configures SASL auth,
+    and rewrites the envelope/From sender so mail doesn't bounce with
+    "not owned by user".
+  license: MIT
+  min_ansible_version: "2.12"
+  platforms:
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+        - noble
+  galaxy_tags:
+    - postfix
+    - smtp
+    - mail
+    - relay
+    - office365
+    - oauth2
+    - exchangeonline
+
+dependencies: []

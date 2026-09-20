@@ -1,0 +1,138 @@
+---
+- name: Fail early if no ZeroSMTP credentials were given
+  ansible.builtin.assert:
+    that:
+      - zerosmtp_username | length > 0
+      - zerosmtp_password | length > 0
+    fail_msg: >-
+      zerosmtp_username and zerosmtp_password are required. Register free at
+      https://msgwing.com and copy the generated login and password - they
+      are shown once.
+
+- name: Fail if the username isn't a msgwing.com address
+  ansible.builtin.assert:
+    that:
+      - zerosmtp_username is search('@msgwing\\.com$')
+    fail_msg: "zerosmtp_username should be the full address issued at msgwing.com (e.g. you@msgwing.com), got '{{ zerosmtp_username }}'."
+
+- name: Fail on an unsupported port
+  ansible.builtin.assert:
+    that:
+      - zerosmtp_port in [587, 465]
+    fail_msg: "zerosmtp_port must be 587 (STARTTLS) or 465 (implicit TLS), got '{{ zerosmtp_port }}'."
+
+- name: Refuse anything that isn't Debian/Ubuntu
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == "Debian"
+    fail_msg: "This role targets Debian/Ubuntu only (detected {{ ansible_facts.os_family }})."
+
+# Preseed both questions before the package installs - otherwise the
+# postfix package's own postinst script waits on a debconf prompt for the
+# "general type of mail configuration" the first time it's ever installed.
+- name: Preseed debconf answers for the postfix package
+  ansible.builtin.debconf:
+    name: postfix
+    question: "{{ item.question }}"
+    value: "{{ item.value }}"
+    vtype: "{{ item.vtype }}"
+  loop:
+    - { question: "postfix/main_mailer_type", value: "Satellite system", vtype: "select" }
+    - { question: "postfix/mailname", value: "{{ ansible_facts.fqdn | default(ansible_facts.hostname) }}", vtype: "string" }
+    - { question: "postfix/relayhost", value: "[{{ zerosmtp_relay_host }}]:{{ zerosmtp_port }}", vtype: "string" }
+
+- name: Install Postfix and dependencies
+  ansible.builtin.apt:
+    name:
+      - postfix
+      - mailutils
+      - libsasl2-modules
+    state: present
+    update_cache: true
+
+- name: Read Postfix's default lookup-table type
+  ansible.builtin.command: postconf -h default_database_type
+  register: zerosmtp_db_type
+  changed_when: false
+
+- name: Deploy SASL credentials for the relay
+  ansible.builtin.copy:
+    dest: /etc/postfix/sasl_passwd
+    content: "[{{ zerosmtp_relay_host }}]:{{ zerosmtp_port }} {{ zerosmtp_username }}:{{ zerosmtp_password }}\n"
+    mode: "0600"
+  no_log: true
+  notify: Postmap sasl_passwd
+
+# The envelope sender and the visible From: header are separate things,
+# and the relay only checks the first one - both maps exist so mail from
+# any local user (root, cron, the invoking user) leaves as the ZeroSMTP
+# account instead of bouncing with "553 5.7.1 ... not owned by user".
+- name: Deploy the envelope-sender rewrite map
+  ansible.builtin.copy:
+    dest: /etc/postfix/sender_canonical
+    content: "/.+/    {{ zerosmtp_username }}\n"
+    mode: "0644"
+  notify: Postmap sender_canonical
+
+- name: "Deploy the visible From: header rewrite"
+  ansible.builtin.copy:
+    dest: /etc/postfix/header_from
+    content: "/^From:.*/  REPLACE From: {{ zerosmtp_username }}\n"
+    mode: "0644"
+  # Deliberately not postmapped - regexp:/pcre: tables are read as plain
+  # text by Postfix and have no .db to build.
+  notify: Restart postfix
+
+- name: Configure main.cf
+  ansible.builtin.command:
+    cmd: postconf -e "{{ item }}"
+  loop:
+    - "relayhost = [{{ zerosmtp_relay_host }}]:{{ zerosmtp_port }}"
+    - "smtp_sasl_auth_enable = yes"
+    - "smtp_sasl_password_maps = {{ zerosmtp_db_type.stdout }}:/etc/postfix/sasl_passwd"
+    - "smtp_sasl_security_options = noanonymous"
+    - "smtp_tls_security_level = encrypt"
+    - "smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt"
+    - "sender_canonical_classes = envelope_sender, header_sender"
+    - "sender_canonical_maps = regexp:/etc/postfix/sender_canonical"
+    - "smtp_header_checks = regexp:/etc/postfix/header_from"
+    - "smtp_tls_wrappermode = {{ 'yes' if zerosmtp_port == 465 else 'no' }}"
+  # postconf -e always exits 0 and rewrites the file whether or not the
+  # value changed, so there's no cheap way to report an accurate "changed"
+  # here without diffing main.cf ourselves - left honest as always-changed
+  # rather than a `changed_when: false` that would hide real edits.
+  notify: Restart postfix
+
+- name: Send a test message
+  when: zerosmtp_test_recipient | length > 0
+  block:
+    - name: Send it
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "Test from ansible-role-postfix-relay" | mail -s "ZeroSMTP relay test" "{{ zerosmtp_test_recipient }}"
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Give Postfix a moment to log the delivery attempt
+      ansible.builtin.pause:
+        seconds: 2
+
+    - name: Read back the last sender Postfix logged
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep 'from=<' /var/log/mail.log | tail -1
+      args:
+        executable: /bin/bash
+      register: zerosmtp_last_sender
+      changed_when: false
+      failed_when: false
+
+    - name: Report whether the sender rewrite is confirmed
+      ansible.builtin.assert:
+        that:
+          - "('from=<' + zerosmtp_username + '>') in zerosmtp_last_sender.stdout"
+        fail_msg: >-
+          Could not confirm the sender rewrite from /var/log/mail.log yet -
+          check manually: grep 'from=<' /var/log/mail.log | tail -1
+        success_msg: "Sender rewrite confirmed: mail is leaving as {{ zerosmtp_username }}."
